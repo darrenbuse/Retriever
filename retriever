@@ -25,8 +25,9 @@ Usage: retriever [command] [options]
 
 Commands:
     clone       Select and clone repos from GitHub
-    fetch       Fetch and rebase all repos in the repos directory
+    fetch       Fetch and rebase selected repos
     list        List all repos in the repos directory
+    install     Add retriever to your PATH
     help        Show this help message
 
 Options:
@@ -95,25 +96,218 @@ check_dependencies() {
 clone_repos() {
     check_dependencies
 
+    # Create repos directory
+    mkdir -p "$REPOS_DIR"
+
     log_info "Fetching your repos from GitHub..."
 
     # Get list of repos with name and description
-    local repos
-    repos=$(gh repo list --limit 200 --json nameWithOwner,description \
+    local all_repos
+    all_repos=$(gh repo list --limit 200 --json nameWithOwner,description \
         --jq '.[] | "\(.nameWithOwner)\t\(.description // "No description")"')
 
-    if [ -z "$repos" ]; then
+    if [ -z "$all_repos" ]; then
         log_error "No repos found"
         exit 1
     fi
 
-    log_info "Select repos to clone (TAB to select, ENTER to confirm):"
+    # Get list of existing local repos
+    local existing_repos=()
+    if [ -d "$REPOS_DIR" ]; then
+        for dir in "$REPOS_DIR"/*/; do
+            [ -d "$dir" ] || continue
+            existing_repos+=("$(basename "$dir")")
+        done
+    fi
+
+    # Filter to only show repos NOT already cloned
+    local new_repos=""
+    while IFS= read -r line; do
+        local repo_name
+        repo_name=$(basename "$(echo "$line" | cut -f1)")
+        local is_existing=false
+        for existing in "${existing_repos[@]}"; do
+            if [ "$existing" = "$repo_name" ]; then
+                is_existing=true
+                break
+            fi
+        done
+        if [ "$is_existing" = false ]; then
+            if [ -z "$new_repos" ]; then
+                new_repos="$line"
+            else
+                new_repos="$new_repos"$'\n'"$line"
+            fi
+        fi
+    done <<< "$all_repos"
+
+    local cloned=0
+    local removed=0
+
+    # PHASE 1: Select new repos to clone
+    if [ -n "$new_repos" ]; then
+        log_info "Phase 1: Select NEW repos to clone (TAB to select, ENTER to confirm, ESC to skip):"
+        echo ""
+
+        local selected_new
+        selected_new=$(echo "$new_repos" | fzf --multi \
+            --header "🐕 Select NEW repos to clone (TAB=select, ENTER=confirm, ESC=skip)" \
+            --preview "echo {} | cut -f2" \
+            --preview-window=down:1:wrap \
+            --delimiter=$'\t' \
+            --with-nth=1 \
+            --bind 'ctrl-a:select-all,ctrl-d:deselect-all' \
+            || true)
+
+        if [ -n "$selected_new" ]; then
+            echo ""
+            log_info "Cloning selected repos to $REPOS_DIR..."
+            echo ""
+
+            while IFS= read -r line; do
+                local repo_full
+                repo_full=$(echo "$line" | cut -f1)
+                local repo_name
+                repo_name=$(basename "$repo_full")
+                local target_dir="$REPOS_DIR/$repo_name"
+
+                log_info "Cloning $repo_full..."
+                if gh repo clone "$repo_full" "$target_dir" -- --quiet 2>/dev/null; then
+                    log_success "Cloned $repo_name"
+                    ((cloned++))
+                else
+                    log_error "Failed to clone $repo_name"
+                fi
+            done <<< "$selected_new"
+        else
+            log_info "No new repos selected to clone"
+        fi
+    else
+        log_info "No new repos available to clone (all already exist locally)"
+    fi
+
+    # PHASE 2: Select existing repos to remove
+    if [ ${#existing_repos[@]} -gt 0 ]; then
+        echo ""
+        log_info "Phase 2: Select EXISTING repos to remove (TAB to select, ENTER to confirm, ESC to skip):"
+        echo ""
+
+        # Build list of existing repos with their status
+        local existing_list=""
+        for repo_name in "${existing_repos[@]}"; do
+            local dir="$REPOS_DIR/$repo_name"
+            local status="clean"
+            if [ -d "$dir/.git" ]; then
+                cd "$dir"
+                if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+                    status="modified"
+                fi
+            fi
+            if [ -z "$existing_list" ]; then
+                existing_list="$repo_name\t$status"
+            else
+                existing_list="$existing_list"$'\n'"$repo_name\t$status"
+            fi
+        done
+
+        local selected_remove
+        selected_remove=$(echo -e "$existing_list" | fzf --multi \
+            --header "🗑️  Select repos to REMOVE (TAB=select, ENTER=confirm, ESC=skip)" \
+            --preview "echo 'Status: '\$(echo {} | cut -f2)" \
+            --preview-window=down:1:wrap \
+            --delimiter=$'\t' \
+            --with-nth=1 \
+            --bind 'ctrl-a:select-all,ctrl-d:deselect-all' \
+            || true)
+
+        if [ -n "$selected_remove" ]; then
+            echo ""
+            log_warn "About to remove the following repos:"
+            while IFS= read -r line; do
+                local repo_name
+                repo_name=$(echo "$line" | cut -f1)
+                echo "  - $repo_name"
+            done <<< "$selected_remove"
+
+            echo ""
+            read -p "Are you sure? (y/N) " -n 1 -r
+            echo ""
+
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                while IFS= read -r line; do
+                    local repo_name
+                    repo_name=$(echo "$line" | cut -f1)
+                    local target_dir="$REPOS_DIR/$repo_name"
+
+                    log_info "Removing $repo_name..."
+                    if rm -rf "$target_dir"; then
+                        log_success "Removed $repo_name"
+                        ((removed++))
+                    else
+                        log_error "Failed to remove $repo_name"
+                    fi
+                done <<< "$selected_remove"
+            else
+                log_info "Removal cancelled"
+            fi
+        else
+            log_info "No repos selected to remove"
+        fi
+    fi
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log_success "Done! Cloned $cloned repos, removed $removed repos"
+}
+
+fetch_repos() {
+    check_dependencies
+
+    if [ ! -d "$REPOS_DIR" ]; then
+        log_error "Repos directory does not exist: $REPOS_DIR"
+        exit 1
+    fi
+
+    # Build list of repos with their status for fzf
+    log_info "Scanning repos in $REPOS_DIR..."
+
+    local repo_list=""
+    for dir in "$REPOS_DIR"/*/; do
+        [ -d "$dir" ] || continue
+        local repo_name
+        repo_name=$(basename "$dir")
+
+        if [ ! -d "$dir/.git" ]; then
+            continue  # Skip non-git directories
+        fi
+
+        cd "$dir"
+        local branch
+        branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+        local status="clean"
+
+        if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+            status="modified"
+        fi
+
+        if [ -z "$repo_list" ]; then
+            repo_list="$repo_name\t[$branch] ($status)"
+        else
+            repo_list="$repo_list"$'\n'"$repo_name\t[$branch] ($status)"
+        fi
+    done
+
+    if [ -z "$repo_list" ]; then
+        log_error "No git repos found in $REPOS_DIR"
+        exit 1
+    fi
+
+    log_info "Select repos to fetch and rebase (TAB to select, ENTER to confirm):"
     echo ""
 
-    # Use fzf for multi-select
     local selected
-    selected=$(echo "$repos" | fzf --multi \
-        --header "🐕 Select repos to clone (TAB=select, ENTER=confirm, ESC=cancel)" \
+    selected=$(echo -e "$repo_list" | fzf --multi \
+        --header "🐕 Select repos to fetch (TAB=select, Ctrl-A=all, ENTER=confirm)" \
         --preview "echo {} | cut -f2" \
         --preview-window=down:1:wrap \
         --delimiter=$'\t' \
@@ -126,51 +320,8 @@ clone_repos() {
         exit 0
     fi
 
-    # Create repos directory
-    mkdir -p "$REPOS_DIR"
-
-    # Clone each selected repo
     echo ""
-    log_info "Cloning selected repos to $REPOS_DIR..."
-    echo ""
-
-    local count=0
-    local skipped=0
-
-    while IFS= read -r line; do
-        local repo_full
-        repo_full=$(echo "$line" | cut -f1)
-        local repo_name
-        repo_name=$(basename "$repo_full")
-        local target_dir="$REPOS_DIR/$repo_name"
-
-        if [ -d "$target_dir" ]; then
-            log_warn "Skipping $repo_name (already exists)"
-            ((skipped++))
-        else
-            log_info "Cloning $repo_full..."
-            if gh repo clone "$repo_full" "$target_dir" -- --quiet 2>/dev/null; then
-                log_success "Cloned $repo_name"
-                ((count++))
-            else
-                log_error "Failed to clone $repo_name"
-            fi
-        fi
-    done <<< "$selected"
-
-    echo ""
-    log_success "Done! Cloned $count repos, skipped $skipped"
-}
-
-fetch_repos() {
-    check_dependencies
-
-    if [ ! -d "$REPOS_DIR" ]; then
-        log_error "Repos directory does not exist: $REPOS_DIR"
-        exit 1
-    fi
-
-    log_info "Fetching and rebasing repos in $REPOS_DIR..."
+    log_info "Fetching and rebasing selected repos..."
     echo ""
 
     local success=0
@@ -179,17 +330,10 @@ fetch_repos() {
     local failed=0
     local conflict_repos=()
 
-    for dir in "$REPOS_DIR"/*/; do
-        [ -d "$dir" ] || continue
-
+    while IFS= read -r line; do
         local repo_name
-        repo_name=$(basename "$dir")
-
-        if [ ! -d "$dir/.git" ]; then
-            log_warn "Skipping $repo_name (not a git repo)"
-            ((skipped++))
-            continue
-        fi
+        repo_name=$(echo "$line" | cut -f1)
+        local dir="$REPOS_DIR/$repo_name"
 
         cd "$dir"
 
@@ -266,7 +410,7 @@ fetch_repos() {
                 ((conflicts++))
             fi
         fi
-    done
+    done <<< "$selected"
 
     cd "$REPOS_DIR"
 
@@ -323,6 +467,66 @@ list_repos() {
     log_info "Total: $count repos"
 }
 
+install_retriever() {
+    # Get the directory where this script lives
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    # Detect shell
+    local shell_name
+    shell_name=$(basename "$SHELL")
+    local rc_file
+
+    case "$shell_name" in
+        zsh)
+            rc_file="$HOME/.zshrc"
+            ;;
+        bash)
+            if [ -f "$HOME/.bash_profile" ]; then
+                rc_file="$HOME/.bash_profile"
+            else
+                rc_file="$HOME/.bashrc"
+            fi
+            ;;
+        *)
+            log_error "Unsupported shell: $shell_name"
+            echo "Please manually add this to your shell config:"
+            echo "  export PATH=\"\$PATH:$script_dir\""
+            exit 1
+            ;;
+    esac
+
+    # Check if already in PATH
+    if echo "$PATH" | tr ':' '\n' | grep -qx "$script_dir"; then
+        log_success "Retriever is already in your PATH"
+        return 0
+    fi
+
+    # Check if export line already exists in rc file
+    local export_line="export PATH=\"\$PATH:$script_dir\""
+    if grep -qF "$script_dir" "$rc_file" 2>/dev/null; then
+        log_success "PATH export already exists in $rc_file"
+        log_info "Run 'source $rc_file' or restart your terminal"
+        return 0
+    fi
+
+    # Add to rc file
+    log_info "Adding retriever to PATH in $rc_file..."
+
+    {
+        echo ""
+        echo "# Retriever - repo fetcher 🐕"
+        echo "$export_line"
+    } >> "$rc_file"
+
+    log_success "Added to $rc_file"
+    echo ""
+    log_info "Run this to use immediately:"
+    echo "  source $rc_file"
+    echo ""
+    log_info "Or restart your terminal"
+}
+
 # Parse arguments
 COMMAND=""
 while [[ $# -gt 0 ]]; do
@@ -331,7 +535,7 @@ while [[ $# -gt 0 ]]; do
             REPOS_DIR="$2"
             shift 2
             ;;
-        clone|fetch|list|help)
+        clone|fetch|list|install|help)
             COMMAND="$1"
             shift
             ;;
@@ -359,6 +563,9 @@ case $COMMAND in
         ;;
     list)
         list_repos
+        ;;
+    install)
+        install_retriever
         ;;
     help)
         usage

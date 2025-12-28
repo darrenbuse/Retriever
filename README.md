@@ -4,9 +4,10 @@
 
 ## What it does
 
-- **Clone**: Presents all your GitHub repos in an interactive list (using fzf) — select which ones to clone
-- **Fetch**: Fetches all repos and rebases cleanly where possible, reports conflicts for manual handling
+- **Clone**: Two-phase selection — first pick NEW repos to clone, then optionally remove existing ones
+- **Fetch**: Select which repos to fetch and rebase (interactive)
 - **List**: Shows all repos with their current branch and status
+- **Install**: Adds retriever to your PATH automatically
 
 ## Dependencies
 
@@ -23,19 +24,22 @@ gh auth login
 
 ```bash
 # Clone this repo
-gh repo clone darrenbuse/Retriever
+gh repo clone darrenbuse/Retriever ~/Retriever
 
-# Add to your PATH (or symlink to somewhere in your PATH)
-export PATH="$PATH:$HOME/path/to/Retriever"
+# Run install to add to PATH
+~/Retriever/retriever install
+
+# Source your shell config (or restart terminal)
+source ~/.zshrc  # or ~/.bashrc
 ```
 
 ## Usage
 
 ```bash
-# Select repos to clone (interactive)
+# Select repos to clone + optionally remove existing
 retriever clone
 
-# Fetch and rebase all repos
+# Select repos to fetch and rebase
 retriever fetch
 
 # List all repos with status
@@ -55,12 +59,15 @@ export RETRIEVER_REPOS_DIR="$HOME/projects"
 
 Default is `~/repos`.
 
+## How clone works
+
+1. **Phase 1**: Shows repos you DON'T have locally — select which to clone
+2. **Phase 2**: Shows repos you DO have locally — select any to remove (with confirmation)
+
 ## How fetch works
 
-1. Iterates through all git repos in the repos directory
-2. Skips repos with uncommitted changes (won't touch your work)
-3. Fetches from origin
-4. Attempts rebase — if conflicts occur, aborts and reports them
-5. Gives you a summary at the end
-
-Repos with conflicts are listed so you can handle them manually.
+1. Shows all local repos with branch and status
+2. Select which ones to fetch (Ctrl-A for all)
+3. Fetches and rebases each one
+4. Skips repos with uncommitted changes (won't touch your work)
+5. Reports conflicts for manual handling
