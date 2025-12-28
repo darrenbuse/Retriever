@@ -1,0 +1,366 @@
+#!/usr/bin/env bash
+#
+# 🐕 Retriever - Fetches your repos like a good dog
+#
+# Clone, sync, and rebase all your GitHub repos with one command.
+#
+
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Default repos directory
+REPOS_DIR="${RETRIEVER_REPOS_DIR:-$HOME/repos}"
+
+usage() {
+    cat <<EOF
+🐕 Retriever - Fetches your repos like a good dog
+
+Usage: retriever [command] [options]
+
+Commands:
+    clone       Select and clone repos from GitHub
+    fetch       Fetch and rebase all repos in the repos directory
+    list        List all repos in the repos directory
+    help        Show this help message
+
+Options:
+    -d, --dir DIR    Directory to store repos (default: \$RETRIEVER_REPOS_DIR or ~/repos)
+
+Environment:
+    RETRIEVER_REPOS_DIR    Default directory for repos
+
+Examples:
+    retriever clone                  # Select repos to clone
+    retriever fetch                  # Fetch and rebase all repos
+    retriever clone -d ~/projects    # Clone to specific directory
+EOF
+}
+
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[OK]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+check_dependencies() {
+    local missing=()
+
+    if ! command -v gh &> /dev/null; then
+        missing+=("gh (GitHub CLI)")
+    fi
+
+    if ! command -v fzf &> /dev/null; then
+        missing+=("fzf (fuzzy finder)")
+    fi
+
+    if ! command -v git &> /dev/null; then
+        missing+=("git")
+    fi
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        log_error "Missing dependencies:"
+        for dep in "${missing[@]}"; do
+            echo "  - $dep"
+        done
+        echo ""
+        echo "Install with:"
+        echo "  brew install gh fzf git"
+        exit 1
+    fi
+
+    # Check gh auth
+    if ! gh auth status &> /dev/null; then
+        log_error "Not authenticated with GitHub CLI"
+        echo "Run: gh auth login"
+        exit 1
+    fi
+}
+
+clone_repos() {
+    check_dependencies
+
+    log_info "Fetching your repos from GitHub..."
+
+    # Get list of repos with name and description
+    local repos
+    repos=$(gh repo list --limit 200 --json nameWithOwner,description \
+        --jq '.[] | "\(.nameWithOwner)\t\(.description // "No description")"')
+
+    if [ -z "$repos" ]; then
+        log_error "No repos found"
+        exit 1
+    fi
+
+    log_info "Select repos to clone (TAB to select, ENTER to confirm):"
+    echo ""
+
+    # Use fzf for multi-select
+    local selected
+    selected=$(echo "$repos" | fzf --multi \
+        --header "🐕 Select repos to clone (TAB=select, ENTER=confirm, ESC=cancel)" \
+        --preview "echo {} | cut -f2" \
+        --preview-window=down:1:wrap \
+        --delimiter=$'\t' \
+        --with-nth=1 \
+        --bind 'ctrl-a:select-all,ctrl-d:deselect-all' \
+        || true)
+
+    if [ -z "$selected" ]; then
+        log_warn "No repos selected"
+        exit 0
+    fi
+
+    # Create repos directory
+    mkdir -p "$REPOS_DIR"
+
+    # Clone each selected repo
+    echo ""
+    log_info "Cloning selected repos to $REPOS_DIR..."
+    echo ""
+
+    local count=0
+    local skipped=0
+
+    while IFS= read -r line; do
+        local repo_full
+        repo_full=$(echo "$line" | cut -f1)
+        local repo_name
+        repo_name=$(basename "$repo_full")
+        local target_dir="$REPOS_DIR/$repo_name"
+
+        if [ -d "$target_dir" ]; then
+            log_warn "Skipping $repo_name (already exists)"
+            ((skipped++))
+        else
+            log_info "Cloning $repo_full..."
+            if gh repo clone "$repo_full" "$target_dir" -- --quiet 2>/dev/null; then
+                log_success "Cloned $repo_name"
+                ((count++))
+            else
+                log_error "Failed to clone $repo_name"
+            fi
+        fi
+    done <<< "$selected"
+
+    echo ""
+    log_success "Done! Cloned $count repos, skipped $skipped"
+}
+
+fetch_repos() {
+    check_dependencies
+
+    if [ ! -d "$REPOS_DIR" ]; then
+        log_error "Repos directory does not exist: $REPOS_DIR"
+        exit 1
+    fi
+
+    log_info "Fetching and rebasing repos in $REPOS_DIR..."
+    echo ""
+
+    local success=0
+    local conflicts=0
+    local skipped=0
+    local failed=0
+    local conflict_repos=()
+
+    for dir in "$REPOS_DIR"/*/; do
+        [ -d "$dir" ] || continue
+
+        local repo_name
+        repo_name=$(basename "$dir")
+
+        if [ ! -d "$dir/.git" ]; then
+            log_warn "Skipping $repo_name (not a git repo)"
+            ((skipped++))
+            continue
+        fi
+
+        cd "$dir"
+
+        # Get current branch
+        local branch
+        branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+
+        if [ -z "$branch" ]; then
+            log_warn "Skipping $repo_name (detached HEAD)"
+            ((skipped++))
+            continue
+        fi
+
+        # Check for uncommitted changes
+        if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+            log_warn "Skipping $repo_name (uncommitted changes)"
+            ((skipped++))
+            continue
+        fi
+
+        # Fetch from origin
+        echo -n "Fetching $repo_name... "
+        if ! git fetch origin --quiet 2>/dev/null; then
+            echo ""
+            log_error "Failed to fetch $repo_name"
+            ((failed++))
+            continue
+        fi
+
+        # Check if we need to rebase
+        local upstream="origin/$branch"
+        if ! git rev-parse "$upstream" &>/dev/null; then
+            echo "no upstream"
+            ((skipped++))
+            continue
+        fi
+
+        local local_commit
+        local_commit=$(git rev-parse HEAD)
+        local remote_commit
+        remote_commit=$(git rev-parse "$upstream")
+
+        if [ "$local_commit" = "$remote_commit" ]; then
+            echo "up to date"
+            ((success++))
+            continue
+        fi
+
+        # Check if we can fast-forward (no local commits ahead)
+        local base
+        base=$(git merge-base HEAD "$upstream")
+
+        if [ "$base" = "$local_commit" ]; then
+            # Fast-forward possible
+            if git rebase "$upstream" --quiet 2>/dev/null; then
+                echo "rebased (fast-forward)"
+                ((success++))
+            else
+                echo ""
+                log_error "Rebase failed for $repo_name"
+                git rebase --abort 2>/dev/null || true
+                ((failed++))
+            fi
+        else
+            # Need to rebase with local changes
+            echo -n "rebasing... "
+            if git rebase "$upstream" --quiet 2>/dev/null; then
+                echo "done"
+                ((success++))
+            else
+                echo "conflict!"
+                git rebase --abort 2>/dev/null || true
+                conflict_repos+=("$repo_name")
+                ((conflicts++))
+            fi
+        fi
+    done
+
+    cd "$REPOS_DIR"
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log_info "Summary:"
+    echo "  ✓ Success:   $success"
+    echo "  ⚠ Skipped:   $skipped"
+    echo "  ✗ Failed:    $failed"
+    echo "  ⚡ Conflicts: $conflicts"
+
+    if [ ${#conflict_repos[@]} -gt 0 ]; then
+        echo ""
+        log_warn "Repos with conflicts (need manual rebase):"
+        for repo in "${conflict_repos[@]}"; do
+            echo "  - $repo"
+        done
+    fi
+}
+
+list_repos() {
+    if [ ! -d "$REPOS_DIR" ]; then
+        log_error "Repos directory does not exist: $REPOS_DIR"
+        exit 1
+    fi
+
+    log_info "Repos in $REPOS_DIR:"
+    echo ""
+
+    local count=0
+    for dir in "$REPOS_DIR"/*/; do
+        [ -d "$dir" ] || continue
+        local repo_name
+        repo_name=$(basename "$dir")
+
+        if [ -d "$dir/.git" ]; then
+            cd "$dir"
+            local branch
+            branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+            local status=""
+
+            if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+                status=" ${YELLOW}(modified)${NC}"
+            fi
+
+            echo -e "  $repo_name ${BLUE}[$branch]${NC}$status"
+            ((count++))
+        else
+            echo -e "  $repo_name ${RED}(not a git repo)${NC}"
+        fi
+    done
+
+    echo ""
+    log_info "Total: $count repos"
+}
+
+# Parse arguments
+COMMAND=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -d|--dir)
+            REPOS_DIR="$2"
+            shift 2
+            ;;
+        clone|fetch|list|help)
+            COMMAND="$1"
+            shift
+            ;;
+        *)
+            log_error "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+# Default to help if no command
+if [ -z "$COMMAND" ]; then
+    usage
+    exit 0
+fi
+
+# Run command
+case $COMMAND in
+    clone)
+        clone_repos
+        ;;
+    fetch)
+        fetch_repos
+        ;;
+    list)
+        list_repos
+        ;;
+    help)
+        usage
+        ;;
+esac
