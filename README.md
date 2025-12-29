@@ -72,6 +72,18 @@ Default is `~/repos`.
 4. Skips repos with uncommitted changes (won't touch your work)
 5. Reports conflicts for manual handling
 
+## Zsh Completion
+
+Add to your `.zshrc` (after sourcing your zsh framework like Prezto/Oh-My-Zsh):
+
+```bash
+fpath=($HOME/Projects/Retriever $fpath)
+autoload -Uz _retriever
+compdef _retriever retriever
+```
+
+Then `retriever <TAB>` will complete commands and options.
+
 ## Testing
 
 Tests use [Bats](https://github.com/bats-core/bats-core) (Bash Automated Testing System).
