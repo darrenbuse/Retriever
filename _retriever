@@ -1,0 +1,41 @@
+#compdef retriever
+
+# Zsh completion for Retriever
+
+_retriever() {
+    local -a commands
+    local -a options
+
+    commands=(
+        'clone:Select and clone repos from GitHub'
+        'fetch:Fetch and rebase selected repos'
+        'list:List all repos in the repos directory'
+        'install:Add retriever to your PATH'
+        'help:Show help message'
+    )
+
+    options=(
+        '-d[Directory to store repos]:directory:_files -/'
+        '--dir[Directory to store repos]:directory:_files -/'
+    )
+
+    _arguments -C \
+        $options \
+        '1:command:->command' \
+        '*::arg:->args'
+
+    case "$state" in
+        command)
+            _describe -t commands 'retriever commands' commands
+            ;;
+        args)
+            case $words[1] in
+                clone|fetch|list)
+                    _arguments $options
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_retriever "$@"
