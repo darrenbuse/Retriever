@@ -71,3 +71,20 @@ Default is `~/repos`.
 3. Fetches and rebases each one
 4. Skips repos with uncommitted changes (won't touch your work)
 5. Reports conflicts for manual handling
+
+## Testing
+
+Tests use [Bats](https://github.com/bats-core/bats-core) (Bash Automated Testing System).
+
+```bash
+# Install bats
+brew install bats-core
+
+# Run tests
+bats test/
+
+# Or use the test runner
+./test/run_tests.sh
+```
+
+CI runs on every push via GitHub Actions (Ubuntu + macOS).
