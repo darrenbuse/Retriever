@@ -396,11 +396,10 @@ fetch_repos() {
             continue
         fi
 
-        # Check for uncommitted changes
+        # Check for uncommitted changes (will skip rebase but still fetch)
+        local has_uncommitted=false
         if ! git diff-index --quiet HEAD -- 2>/dev/null; then
-            log_warn "Skipping $repo_name (uncommitted changes)"
-            skipped=$((skipped + 1))
-            continue
+            has_uncommitted=true
         fi
 
         # Get common git dir (shared by worktrees)
@@ -446,6 +445,13 @@ fetch_repos() {
         if [ "$local_commit" = "$remote_commit" ]; then
             echo "up to date"
             success=$((success + 1))
+            continue
+        fi
+
+        # Skip rebase if uncommitted changes
+        if [ "$has_uncommitted" = true ]; then
+            echo "fetched (skipping rebase - uncommitted changes)"
+            skipped=$((skipped + 1))
             continue
         fi
 
