@@ -208,7 +208,7 @@ clone_repos() {
                 local target_dir="$REPOS_DIR/$repo_name"
 
                 log_info "Cloning $repo_full..."
-                if gh repo clone "$repo_full" "$target_dir" -- --quiet < /dev/null 2>/dev/null; then
+                if (gh repo clone "$repo_full" "$target_dir" -- --quiet 2>/dev/null) </dev/null; then
                     log_success "Cloned $repo_name"
                     ((cloned++))
                 else
