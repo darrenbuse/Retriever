@@ -201,8 +201,6 @@ clone_repos() {
                 repos_to_clone+=("$line")
             done <<< "$selected_new"
 
-            echo "DEBUG: ${#repos_to_clone[@]} repos to clone"
-
             for line in "${repos_to_clone[@]}"; do
                 local repo_full
                 repo_full=$(echo "$line" | cut -f1)
@@ -210,11 +208,10 @@ clone_repos() {
                 repo_name=$(basename "$repo_full")
                 local target_dir="$REPOS_DIR/$repo_name"
 
-                echo "DEBUG: cloning $repo_name"
                 log_info "Cloning $repo_full..."
                 if gh repo clone "$repo_full" "$target_dir" -- --quiet 2>/dev/null; then
                     log_success "Cloned $repo_name"
-                    ((cloned++))
+                    cloned=$((cloned + 1))
                 else
                     log_error "Failed to clone $repo_name"
                 fi
@@ -284,7 +281,7 @@ clone_repos() {
                     log_info "Removing $repo_name..."
                     if rm -rf "$target_dir"; then
                         log_success "Removed $repo_name"
-                        ((removed++))
+                        removed=$((removed + 1))
                     else
                         log_error "Failed to remove $repo_name"
                     fi
@@ -395,14 +392,14 @@ fetch_repos() {
 
         if [ -z "$branch" ]; then
             log_warn "Skipping $repo_name (detached HEAD)"
-            ((skipped++))
+            skipped=$((skipped + 1))
             continue
         fi
 
         # Check for uncommitted changes
         if ! git diff-index --quiet HEAD -- 2>/dev/null; then
             log_warn "Skipping $repo_name (uncommitted changes)"
-            ((skipped++))
+            skipped=$((skipped + 1))
             continue
         fi
 
@@ -427,7 +424,7 @@ fetch_repos() {
             if ! git fetch origin --quiet < /dev/null 2>/dev/null; then
                 echo ""
                 log_error "Failed to fetch $repo_name"
-                ((failed++))
+                failed=$((failed + 1))
                 continue
             fi
             fetched_git_dirs+=("$git_common_dir")
@@ -437,7 +434,7 @@ fetch_repos() {
         local upstream="origin/$branch"
         if ! git rev-parse "$upstream" &>/dev/null; then
             echo "no upstream"
-            ((skipped++))
+            skipped=$((skipped + 1))
             continue
         fi
 
@@ -448,7 +445,7 @@ fetch_repos() {
 
         if [ "$local_commit" = "$remote_commit" ]; then
             echo "up to date"
-            ((success++))
+            success=$((success + 1))
             continue
         fi
 
@@ -460,24 +457,24 @@ fetch_repos() {
             # Fast-forward possible
             if git rebase "$upstream" --quiet < /dev/null 2>/dev/null; then
                 echo "rebased (fast-forward)"
-                ((success++))
+                success=$((success + 1))
             else
                 echo ""
                 log_error "Rebase failed for $repo_name"
                 git rebase --abort < /dev/null 2>/dev/null || true
-                ((failed++))
+                failed=$((failed + 1))
             fi
         else
             # Need to rebase with local changes
             echo -n "rebasing... "
             if git rebase "$upstream" --quiet < /dev/null 2>/dev/null; then
                 echo "done"
-                ((success++))
+                success=$((success + 1))
             else
                 echo "conflict!"
                 git rebase --abort < /dev/null 2>/dev/null || true
                 conflict_repos+=("$repo_name")
-                ((conflicts++))
+                conflicts=$((conflicts + 1))
             fi
         fi
     done <<< "$selected"
@@ -532,11 +529,11 @@ list_repos() {
             local wt_indicator=""
             if [ "$wt_type" = "worktree" ]; then
                 wt_indicator=" ${YELLOW}(worktree)${NC}"
-                ((worktree_count++))
+                worktree_count=$((worktree_count + 1))
             fi
 
             echo -e "  $repo_name ${BLUE}[$branch]${NC}$status$wt_indicator"
-            ((count++))
+            count=$((count + 1))
         else
             echo -e "  $repo_name ${RED}(not a git repo)${NC}"
         fi
@@ -602,7 +599,7 @@ worktree_list() {
         # Count worktrees (first one is the main repo itself)
         local wt_count=0
         while IFS= read -r wt_path; do
-            [ -n "$wt_path" ] && ((wt_count++))
+            [ -n "$wt_path" ] && wt_count=$((wt_count + 1))
         done <<< "$worktrees"
 
         if [ "$wt_count" -gt 1 ]; then
@@ -882,7 +879,7 @@ worktree_remove() {
             log_info "Removing worktree $wt_name..."
             if git --git-dir="$main_git_dir" worktree remove "$wt_path" --force < /dev/null 2>/dev/null; then
                 log_success "Removed $wt_name"
-                ((removed++))
+                removed=$((removed + 1))
             else
                 log_error "Failed to remove $wt_name"
             fi
