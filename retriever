@@ -156,7 +156,7 @@ clone_repos() {
         local repo_name
         repo_name=$(basename "$(echo "$line" | cut -f1)")
         local is_existing=false
-        for existing in "${existing_repos[@]}"; do
+        for existing in "${existing_repos[@]+"${existing_repos[@]}"}"; do
             if [ "$existing" = "$repo_name" ]; then
                 is_existing=true
                 break
@@ -191,15 +191,10 @@ clone_repos() {
 
         if [ -n "$selected_new" ]; then
             echo ""
-            echo "DEBUG: selected_new contains:"
-            echo "$selected_new" | nl
-            echo "DEBUG: end of selected_new ($(echo "$selected_new" | wc -l | tr -d ' ') lines)"
-            echo ""
             log_info "Cloning selected repos to $REPOS_DIR..."
             echo ""
 
             while IFS= read -r line || [ -n "$line" ]; do
-                echo "DEBUG: processing line: '$line'"
                 [ -n "$line" ] || continue
                 local repo_full
                 repo_full=$(echo "$line" | cut -f1)
@@ -208,7 +203,7 @@ clone_repos() {
                 local target_dir="$REPOS_DIR/$repo_name"
 
                 log_info "Cloning $repo_full..."
-                if gh repo clone "$repo_full" "$target_dir" -- --quiet 2>/dev/null; then
+                if gh repo clone "$repo_full" "$target_dir" -- --quiet < /dev/null 2>/dev/null; then
                     log_success "Cloned $repo_name"
                     ((cloned++))
                 else
@@ -420,7 +415,7 @@ fetch_repos() {
         if [ "$already_fetched" = true ]; then
             echo -n "(shared fetch) "
         else
-            if ! git fetch origin --quiet 2>/dev/null; then
+            if ! git fetch origin --quiet < /dev/null 2>/dev/null; then
                 echo ""
                 log_error "Failed to fetch $repo_name"
                 ((failed++))
@@ -454,24 +449,24 @@ fetch_repos() {
 
         if [ "$base" = "$local_commit" ]; then
             # Fast-forward possible
-            if git rebase "$upstream" --quiet 2>/dev/null; then
+            if git rebase "$upstream" --quiet < /dev/null 2>/dev/null; then
                 echo "rebased (fast-forward)"
                 ((success++))
             else
                 echo ""
                 log_error "Rebase failed for $repo_name"
-                git rebase --abort 2>/dev/null || true
+                git rebase --abort < /dev/null 2>/dev/null || true
                 ((failed++))
             fi
         else
             # Need to rebase with local changes
             echo -n "rebasing... "
-            if git rebase "$upstream" --quiet 2>/dev/null; then
+            if git rebase "$upstream" --quiet < /dev/null 2>/dev/null; then
                 echo "done"
                 ((success++))
             else
                 echo "conflict!"
-                git rebase --abort 2>/dev/null || true
+                git rebase --abort < /dev/null 2>/dev/null || true
                 conflict_repos+=("$repo_name")
                 ((conflicts++))
             fi
@@ -876,7 +871,7 @@ worktree_remove() {
             main_git_dir=$(dirname "$(dirname "$git_dir")")
 
             log_info "Removing worktree $wt_name..."
-            if git --git-dir="$main_git_dir" worktree remove "$wt_path" --force 2>/dev/null; then
+            if git --git-dir="$main_git_dir" worktree remove "$wt_path" --force < /dev/null 2>/dev/null; then
                 log_success "Removed $wt_name"
                 ((removed++))
             else

@@ -41,10 +41,10 @@ teardown() {
 # =============================================================================
 
 @test "fails when gh is missing" {
-    # Use mock bin without gh
+    # Use mock bin without gh - include system paths for basic utilities
     create_mock "git"
     create_mock "fzf"
-    export PATH="$MOCK_BIN"
+    export PATH="$MOCK_BIN:/usr/bin:/bin"
 
     run "$RETRIEVER" clone
     [ "$status" -eq 1 ]
@@ -53,7 +53,6 @@ teardown() {
 
 @test "fails when fzf is missing" {
     create_mock "git"
-    create_mock "gh"
     # gh auth status needs to succeed
     cat > "$MOCK_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -63,7 +62,7 @@ fi
 echo "mock gh"
 EOF
     chmod +x "$MOCK_BIN/gh"
-    export PATH="$MOCK_BIN"
+    export PATH="$MOCK_BIN:/usr/bin:/bin"
 
     run "$RETRIEVER" clone
     [ "$status" -eq 1 ]
@@ -71,9 +70,14 @@ EOF
 }
 
 @test "fails when git is missing" {
+    # Skip if system git exists in base paths (can't hide it)
+    if PATH="/usr/bin:/bin" command -v git &>/dev/null; then
+        skip "Cannot hide system git - test requires environment without git"
+    fi
+
     create_mock "fzf"
     create_mock "gh"
-    export PATH="$MOCK_BIN"
+    export PATH="$MOCK_BIN:/usr/bin:/bin"
 
     run "$RETRIEVER" clone
     [ "$status" -eq 1 ]
@@ -84,7 +88,7 @@ EOF
     create_mock "git"
     create_mock "fzf"
     create_failing_mock "gh" "not logged in"
-    export PATH="$MOCK_BIN"
+    export PATH="$MOCK_BIN:/usr/bin:/bin"
 
     run "$RETRIEVER" clone
     [ "$status" -eq 1 ]
@@ -149,6 +153,12 @@ EOF
     export SHELL="/bin/zsh"
     touch "$HOME/.zshrc"
 
+    # Remove script dir from PATH so install doesn't think it's already there
+    local script_dir
+    script_dir="$(cd "$(dirname "$RETRIEVER")" && pwd)"
+    export PATH="${PATH//$script_dir:/}"
+    export PATH="${PATH//:$script_dir/}"
+
     run "$RETRIEVER" install
     [ "$status" -eq 0 ]
     [[ "$output" == *"Added to"* ]]
@@ -162,6 +172,12 @@ EOF
     export SHELL="/bin/bash"
     touch "$HOME/.bashrc"
 
+    # Remove script dir from PATH
+    local script_dir
+    script_dir="$(cd "$(dirname "$RETRIEVER")" && pwd)"
+    export PATH="${PATH//$script_dir:/}"
+    export PATH="${PATH//:$script_dir/}"
+
     run "$RETRIEVER" install
     [ "$status" -eq 0 ]
 
@@ -172,6 +188,12 @@ EOF
     export SHELL="/bin/bash"
     touch "$HOME/.bash_profile"
     touch "$HOME/.bashrc"
+
+    # Remove script dir from PATH
+    local script_dir
+    script_dir="$(cd "$(dirname "$RETRIEVER")" && pwd)"
+    export PATH="${PATH//$script_dir:/}"
+    export PATH="${PATH//:$script_dir/}"
 
     run "$RETRIEVER" install
     [ "$status" -eq 0 ]
@@ -184,6 +206,12 @@ EOF
     export SHELL="/bin/zsh"
     touch "$HOME/.zshrc"
 
+    # Remove script dir from PATH
+    local script_dir
+    script_dir="$(cd "$(dirname "$RETRIEVER")" && pwd)"
+    export PATH="${PATH//$script_dir:/}"
+    export PATH="${PATH//:$script_dir/}"
+
     # Run install twice
     run "$RETRIEVER" install
     [ "$status" -eq 0 ]
@@ -192,8 +220,8 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"already exists"* ]]
 
-    # Count occurrences - should only be 1
-    count=$(grep -c "Retriever" "$HOME/.zshrc")
+    # Count export PATH lines - should only be 1
+    count=$(grep -c "export PATH" "$HOME/.zshrc")
     [ "$count" -eq 1 ]
 }
 
@@ -256,6 +284,58 @@ EOF
     run "$RETRIEVER" fetch
     [ "$status" -eq 1 ]
     [[ "$output" == *"No git repos found"* ]]
+}
+
+# =============================================================================
+# Multi-Selection Clone Tests
+# =============================================================================
+
+@test "clone processes all selected repos not just one" {
+    # Create mock gh that returns repos and tracks clone calls
+    cat > "$MOCK_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "auth" && "$2" == "status" ]]; then
+    exit 0
+fi
+if [[ "$1" == "repo" && "$2" == "list" ]]; then
+    echo -e "user/repo1\tDescription 1"
+    echo -e "user/repo2\tDescription 2"
+    echo -e "user/repo3\tDescription 3"
+    exit 0
+fi
+if [[ "$1" == "repo" && "$2" == "clone" ]]; then
+    # Track which repos were cloned
+    echo "$3" >> "$MOCK_BIN/cloned_repos.log"
+    mkdir -p "$3"
+    exit 0
+fi
+exit 1
+GHEOF
+    chmod +x "$MOCK_BIN/gh"
+
+    # Create mock fzf that returns multiple selections
+    cat > "$MOCK_BIN/fzf" <<'FZFEOF'
+#!/usr/bin/env bash
+# Simulate selecting all 3 repos
+echo -e "user/repo1\tDescription 1"
+echo -e "user/repo2\tDescription 2"
+echo -e "user/repo3\tDescription 3"
+FZFEOF
+    chmod +x "$MOCK_BIN/fzf"
+
+    create_mock "git" ""
+    export PATH="$MOCK_BIN:$PATH"
+
+    # Clear any previous log
+    rm -f "$MOCK_BIN/cloned_repos.log"
+
+    run "$RETRIEVER" clone
+
+    # Check that all 3 repos were cloned
+    [ -f "$MOCK_BIN/cloned_repos.log" ]
+    local clone_count
+    clone_count=$(wc -l < "$MOCK_BIN/cloned_repos.log" | tr -d ' ')
+    [ "$clone_count" -eq 3 ]
 }
 
 # =============================================================================
