@@ -133,7 +133,7 @@ clone_repos() {
 
     # Get list of repos with name and description
     local all_repos
-    all_repos=$(gh repo list --limit 200 --json nameWithOwner,description \
+    all_repos=$(gh repo list --limit 200 --no-archived --json nameWithOwner,description \
         --jq '.[] | "\(.nameWithOwner)\t\(.description // "No description")"')
 
     if [ -z "$all_repos" ]; then
