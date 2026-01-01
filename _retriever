@@ -9,17 +9,26 @@ _retriever() {
 
     commands=(
         'clone:Select and clone repos from GitHub'
+        'c:Select and clone repos from GitHub (alias)'
         'fetch:Fetch and rebase selected repos'
+        'f:Fetch and rebase selected repos (alias)'
         'list:List all repos in the repos directory'
+        'l:List all repos (alias)'
         'worktree:Manage git worktrees'
+        'w:Manage git worktrees (alias)'
         'install:Add retriever to your PATH'
+        'i:Add retriever to your PATH (alias)'
         'help:Show help message'
+        'h:Show help message (alias)'
     )
 
     worktree_subcommands=(
         'list:List all worktrees'
+        'l:List all worktrees (alias)'
         'add:Create a new worktree'
+        'a:Create a new worktree (alias)'
         'remove:Remove worktrees'
+        'r:Remove worktrees (alias)'
     )
 
     options=(
@@ -38,10 +47,10 @@ _retriever() {
             ;;
         args)
             case $words[1] in
-                clone|fetch|list)
+                clone|c|fetch|f|list|l)
                     _arguments $options
                     ;;
-                worktree)
+                worktree|w)
                     _describe -t worktree_subcommands 'worktree subcommands' worktree_subcommands
                     ;;
             esac
