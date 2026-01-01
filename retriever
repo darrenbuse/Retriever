@@ -191,10 +191,15 @@ clone_repos() {
 
         if [ -n "$selected_new" ]; then
             echo ""
+            echo "DEBUG: selected_new contains $(echo "$selected_new" | wc -l | tr -d ' ') lines:"
+            echo "$selected_new" | nl
+            echo "DEBUG: end"
+            echo ""
             log_info "Cloning selected repos to $REPOS_DIR..."
             echo ""
 
             while IFS= read -r line || [ -n "$line" ]; do
+                echo "DEBUG: loop iteration, line='$line'"
                 [ -n "$line" ] || continue
                 local repo_full
                 repo_full=$(echo "$line" | cut -f1)
