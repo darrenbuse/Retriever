@@ -24,11 +24,15 @@ usage() {
 Usage: retriever [command] [options]
 
 Commands:
-    clone       Select and clone repos from GitHub
-    fetch       Fetch and rebase selected repos
-    list        List all repos in the repos directory
-    install     Add retriever to your PATH
-    help        Show this help message
+    clone               Select and clone repos from GitHub
+    fetch               Fetch and rebase selected repos
+    list                List all repos in the repos directory
+    worktree [subcmd]   Manage git worktrees
+        list            List all worktrees (default)
+        add             Create a new worktree
+        remove          Remove worktrees
+    install             Add retriever to your PATH
+    help                Show this help message
 
 Options:
     -d, --dir DIR    Directory to store repos (default: \$RETRIEVER_REPOS_DIR or ~/repos)
@@ -40,6 +44,8 @@ Examples:
     retriever clone                  # Select repos to clone
     retriever fetch                  # Fetch and rebase all repos
     retriever clone -d ~/projects    # Clone to specific directory
+    retriever worktree add           # Create a new worktree
+    retriever worktree list          # List all worktrees
 EOF
 }
 
@@ -91,6 +97,30 @@ check_dependencies() {
         echo "Run: gh auth login"
         exit 1
     fi
+}
+
+# Check if a directory is a git repository (handles both normal repos and worktrees)
+is_git_repo() {
+    local dir="$1"
+    git -C "$dir" rev-parse --is-inside-work-tree &>/dev/null
+}
+
+# Get the type of git working directory: "main", "worktree", or "none"
+get_worktree_type() {
+    local dir="$1"
+    if [ -d "$dir/.git" ]; then
+        echo "main"
+    elif [ -f "$dir/.git" ]; then
+        echo "worktree"
+    else
+        echo "none"
+    fi
+}
+
+# Get the common git directory (shared by all worktrees of a repo)
+get_git_common_dir() {
+    local dir="$1"
+    git -C "$dir" rev-parse --git-common-dir 2>/dev/null
 }
 
 clone_repos() {
@@ -197,7 +227,7 @@ clone_repos() {
         for repo_name in "${existing_repos[@]}"; do
             local dir="$REPOS_DIR/$repo_name"
             local status="clean"
-            if [ -d "$dir/.git" ]; then
+            if is_git_repo "$dir"; then
                 cd "$dir"
                 if ! git diff-index --quiet HEAD -- 2>/dev/null; then
                     status="modified"
@@ -277,7 +307,7 @@ fetch_repos() {
         local repo_name
         repo_name=$(basename "$dir")
 
-        if [ ! -d "$dir/.git" ]; then
+        if ! is_git_repo "$dir"; then
             continue  # Skip non-git directories
         fi
 
@@ -290,10 +320,18 @@ fetch_repos() {
             status="modified"
         fi
 
+        # Add worktree indicator
+        local wt_type
+        wt_type=$(get_worktree_type "$dir")
+        local wt_suffix=""
+        if [ "$wt_type" = "worktree" ]; then
+            wt_suffix=" WT"
+        fi
+
         if [ -z "$repo_list" ]; then
-            repo_list="$repo_name\t[$branch] ($status)"
+            repo_list="$repo_name\t[$branch] ($status)$wt_suffix"
         else
-            repo_list="$repo_list"$'\n'"$repo_name\t[$branch] ($status)"
+            repo_list="$repo_list"$'\n'"$repo_name\t[$branch] ($status)$wt_suffix"
         fi
     done
 
@@ -329,6 +367,7 @@ fetch_repos() {
     local skipped=0
     local failed=0
     local conflict_repos=()
+    local fetched_git_dirs=()  # Track fetched git dirs to avoid redundant fetches
 
     while IFS= read -r line; do
         local repo_name
@@ -354,13 +393,31 @@ fetch_repos() {
             continue
         fi
 
-        # Fetch from origin
+        # Get common git dir (shared by worktrees)
+        local git_common_dir
+        git_common_dir=$(get_git_common_dir "$dir")
+
+        # Check if we already fetched this git database
+        local already_fetched=false
+        for fetched_dir in "${fetched_git_dirs[@]:-}"; do
+            if [ "$fetched_dir" = "$git_common_dir" ]; then
+                already_fetched=true
+                break
+            fi
+        done
+
+        # Fetch from origin (skip if already fetched for this git database)
         echo -n "Fetching $repo_name... "
-        if ! git fetch origin --quiet 2>/dev/null; then
-            echo ""
-            log_error "Failed to fetch $repo_name"
-            ((failed++))
-            continue
+        if [ "$already_fetched" = true ]; then
+            echo -n "(shared fetch) "
+        else
+            if ! git fetch origin --quiet 2>/dev/null; then
+                echo ""
+                log_error "Failed to fetch $repo_name"
+                ((failed++))
+                continue
+            fi
+            fetched_git_dirs+=("$git_common_dir")
         fi
 
         # Check if we need to rebase
@@ -441,12 +498,13 @@ list_repos() {
     echo ""
 
     local count=0
+    local worktree_count=0
     for dir in "$REPOS_DIR"/*/; do
         [ -d "$dir" ] || continue
         local repo_name
         repo_name=$(basename "$dir")
 
-        if [ -d "$dir/.git" ]; then
+        if is_git_repo "$dir"; then
             cd "$dir"
             local branch
             branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
@@ -456,7 +514,15 @@ list_repos() {
                 status=" ${YELLOW}(modified)${NC}"
             fi
 
-            echo -e "  $repo_name ${BLUE}[$branch]${NC}$status"
+            local wt_type
+            wt_type=$(get_worktree_type "$dir")
+            local wt_indicator=""
+            if [ "$wt_type" = "worktree" ]; then
+                wt_indicator=" ${YELLOW}(worktree)${NC}"
+                ((worktree_count++))
+            fi
+
+            echo -e "  $repo_name ${BLUE}[$branch]${NC}$status$wt_indicator"
             ((count++))
         else
             echo -e "  $repo_name ${RED}(not a git repo)${NC}"
@@ -464,7 +530,354 @@ list_repos() {
     done
 
     echo ""
-    log_info "Total: $count repos"
+    if [ $worktree_count -gt 0 ]; then
+        log_info "Total: $count repos ($worktree_count worktrees)"
+    else
+        log_info "Total: $count repos"
+    fi
+}
+
+worktree_command() {
+    local subcmd="${1:-list}"
+    shift || true
+
+    case "$subcmd" in
+        list)
+            worktree_list
+            ;;
+        add)
+            worktree_add
+            ;;
+        remove)
+            worktree_remove
+            ;;
+        *)
+            log_error "Unknown worktree subcommand: $subcmd"
+            echo "Usage: retriever worktree [list|add|remove]"
+            exit 1
+            ;;
+    esac
+}
+
+worktree_list() {
+    if [ ! -d "$REPOS_DIR" ]; then
+        log_error "Repos directory does not exist: $REPOS_DIR"
+        exit 1
+    fi
+
+    log_info "Worktrees in $REPOS_DIR:"
+    echo ""
+
+    local found_any=false
+
+    # Find all main repos (not worktrees) and list their worktrees
+    for dir in "$REPOS_DIR"/*/; do
+        [ -d "$dir" ] || continue
+
+        # Only process main repos (those with .git directory, not file)
+        if [ ! -d "$dir/.git" ]; then
+            continue
+        fi
+
+        local repo_name
+        repo_name=$(basename "$dir")
+
+        cd "$dir"
+        local worktrees
+        worktrees=$(git worktree list --porcelain 2>/dev/null | grep "^worktree " | sed 's/^worktree //')
+
+        # Count worktrees (first one is the main repo itself)
+        local wt_count=0
+        while IFS= read -r wt_path; do
+            [ -n "$wt_path" ] && ((wt_count++))
+        done <<< "$worktrees"
+
+        if [ "$wt_count" -gt 1 ]; then
+            found_any=true
+            echo -e "${BLUE}$repo_name${NC}"
+
+            while IFS= read -r wt_path; do
+                [ -n "$wt_path" ] || continue
+
+                local wt_branch
+                wt_branch=$(git -C "$wt_path" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+
+                local wt_name
+                wt_name=$(basename "$wt_path")
+
+                if [ "$wt_path" = "$dir" ] || [ "$wt_path" = "${dir%/}" ]; then
+                    echo -e "  ├─ $wt_name ${BLUE}[$wt_branch]${NC} (main)"
+                else
+                    echo -e "  ├─ $wt_name ${BLUE}[$wt_branch]${NC}"
+                fi
+            done <<< "$worktrees"
+            echo ""
+        fi
+    done
+
+    if [ "$found_any" = false ]; then
+        log_info "No worktrees found. Create one with: retriever worktree add"
+    fi
+}
+
+worktree_add() {
+    check_dependencies
+
+    if [ ! -d "$REPOS_DIR" ]; then
+        log_error "Repos directory does not exist: $REPOS_DIR"
+        exit 1
+    fi
+
+    # Build list of main repos only (not worktrees)
+    local repo_list=""
+    for dir in "$REPOS_DIR"/*/; do
+        [ -d "$dir" ] || continue
+        [ -d "$dir/.git" ] || continue  # Only main repos
+
+        local repo_name
+        repo_name=$(basename "$dir")
+
+        cd "$dir"
+        local branch
+        branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+
+        if [ -z "$repo_list" ]; then
+            repo_list="$repo_name\t[$branch]"
+        else
+            repo_list="$repo_list"$'\n'"$repo_name\t[$branch]"
+        fi
+    done
+
+    if [ -z "$repo_list" ]; then
+        log_error "No repos found in $REPOS_DIR"
+        exit 1
+    fi
+
+    log_info "Select repo to create worktree for:"
+    echo ""
+
+    local selected
+    selected=$(echo -e "$repo_list" | fzf \
+        --header "🌳 Select repo for new worktree" \
+        --preview "echo {} | cut -f2" \
+        --preview-window=down:1:wrap \
+        --delimiter=$'\t' \
+        --with-nth=1 \
+        || true)
+
+    if [ -z "$selected" ]; then
+        log_warn "No repo selected"
+        exit 0
+    fi
+
+    local repo_name
+    repo_name=$(echo "$selected" | cut -f1)
+    local repo_dir="$REPOS_DIR/$repo_name"
+
+    cd "$repo_dir"
+
+    # Fetch to get latest remote branches
+    log_info "Fetching remote branches..."
+    git fetch --all --quiet 2>/dev/null || true
+
+    # Build list of remote branches
+    local branch_list
+    branch_list=$(git branch -r 2>/dev/null | grep -v 'HEAD' | sed 's|^[[:space:]]*origin/||' | sort -u)
+
+    if [ -z "$branch_list" ]; then
+        log_error "No remote branches found"
+        exit 1
+    fi
+
+    echo ""
+    log_info "Select branch for worktree (or type to create new):"
+
+    local selected_branch
+    selected_branch=$(echo "$branch_list" | fzf \
+        --header "🌿 Select or type branch name" \
+        --print-query \
+        || true)
+
+    # fzf --print-query returns query on first line, selection on second
+    local query
+    query=$(echo "$selected_branch" | head -n1)
+    local selection
+    selection=$(echo "$selected_branch" | tail -n1)
+
+    local branch_name
+    if [ -n "$selection" ] && [ "$selection" != "$query" ]; then
+        branch_name="$selection"
+    elif [ -n "$query" ]; then
+        branch_name="$query"
+    else
+        log_warn "No branch selected"
+        exit 0
+    fi
+
+    # Generate default worktree directory name
+    local sanitized_branch
+    sanitized_branch=$(echo "$branch_name" | sed 's|/|-|g' | sed 's|^feature-||' | sed 's|^bugfix-||' | sed 's|^hotfix-||')
+    local default_wt_name="${repo_name}-${sanitized_branch}"
+
+    echo ""
+    read -p "Worktree directory name [$default_wt_name]: " wt_name
+    wt_name="${wt_name:-$default_wt_name}"
+
+    local wt_path="$REPOS_DIR/$wt_name"
+
+    if [ -e "$wt_path" ]; then
+        log_error "Directory already exists: $wt_path"
+        exit 1
+    fi
+
+    echo ""
+    log_info "Creating worktree at $wt_path for branch $branch_name..."
+
+    # Check if branch exists remotely
+    if git rev-parse "origin/$branch_name" &>/dev/null; then
+        # Branch exists on remote - create worktree tracking it
+        if git worktree add "$wt_path" -b "$branch_name" "origin/$branch_name" 2>/dev/null || \
+           git worktree add "$wt_path" "$branch_name" 2>/dev/null; then
+            log_success "Created worktree: $wt_name [$branch_name]"
+        else
+            log_error "Failed to create worktree"
+            exit 1
+        fi
+    else
+        # New branch - create from current HEAD
+        if git worktree add "$wt_path" -b "$branch_name" 2>/dev/null; then
+            log_success "Created worktree with new branch: $wt_name [$branch_name]"
+        else
+            log_error "Failed to create worktree"
+            exit 1
+        fi
+    fi
+}
+
+worktree_remove() {
+    check_dependencies
+
+    if [ ! -d "$REPOS_DIR" ]; then
+        log_error "Repos directory does not exist: $REPOS_DIR"
+        exit 1
+    fi
+
+    # Build list of all worktrees (excluding main repos)
+    local wt_list=""
+    for dir in "$REPOS_DIR"/*/; do
+        [ -d "$dir" ] || continue
+        [ -d "$dir/.git" ] || continue  # Only main repos
+
+        local repo_name
+        repo_name=$(basename "$dir")
+
+        cd "$dir"
+        local worktrees
+        worktrees=$(git worktree list --porcelain 2>/dev/null)
+
+        local current_wt=""
+        local current_branch=""
+
+        while IFS= read -r line; do
+            if [[ "$line" == "worktree "* ]]; then
+                current_wt="${line#worktree }"
+            elif [[ "$line" == "branch "* ]]; then
+                current_branch="${line#branch refs/heads/}"
+            elif [ -z "$line" ] && [ -n "$current_wt" ]; then
+                # Skip the main worktree
+                if [ "$current_wt" != "$dir" ] && [ "$current_wt" != "${dir%/}" ]; then
+                    local wt_name
+                    wt_name=$(basename "$current_wt")
+                    if [ -z "$wt_list" ]; then
+                        wt_list="$wt_name\t[$current_branch] (from $repo_name)"
+                    else
+                        wt_list="$wt_list"$'\n'"$wt_name\t[$current_branch] (from $repo_name)"
+                    fi
+                fi
+                current_wt=""
+                current_branch=""
+            fi
+        done <<< "$worktrees"
+
+        # Handle last entry
+        if [ -n "$current_wt" ] && [ "$current_wt" != "$dir" ] && [ "$current_wt" != "${dir%/}" ]; then
+            local wt_name
+            wt_name=$(basename "$current_wt")
+            if [ -z "$wt_list" ]; then
+                wt_list="$wt_name\t[$current_branch] (from $repo_name)"
+            else
+                wt_list="$wt_list"$'\n'"$wt_name\t[$current_branch] (from $repo_name)"
+            fi
+        fi
+    done
+
+    if [ -z "$wt_list" ]; then
+        log_info "No worktrees found to remove"
+        exit 0
+    fi
+
+    log_info "Select worktrees to remove (TAB to select, ENTER to confirm):"
+    echo ""
+
+    local selected
+    selected=$(echo -e "$wt_list" | fzf --multi \
+        --header "🗑️  Select worktrees to remove (TAB=select, ENTER=confirm)" \
+        --preview "echo {} | cut -f2" \
+        --preview-window=down:1:wrap \
+        --delimiter=$'\t' \
+        --with-nth=1 \
+        --bind 'ctrl-a:select-all,ctrl-d:deselect-all' \
+        || true)
+
+    if [ -z "$selected" ]; then
+        log_warn "No worktrees selected"
+        exit 0
+    fi
+
+    echo ""
+    log_warn "About to remove the following worktrees:"
+    while IFS= read -r line; do
+        local wt_name
+        wt_name=$(echo "$line" | cut -f1)
+        echo "  - $wt_name"
+    done <<< "$selected"
+
+    echo ""
+    read -p "Are you sure? (y/N) " -n 1 -r
+    echo ""
+
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "Removal cancelled"
+        exit 0
+    fi
+
+    local removed=0
+    while IFS= read -r line; do
+        local wt_name
+        wt_name=$(echo "$line" | cut -f1)
+        local wt_path="$REPOS_DIR/$wt_name"
+
+        # Find the main repo for this worktree
+        if [ -f "$wt_path/.git" ]; then
+            local git_dir
+            git_dir=$(cat "$wt_path/.git" | sed 's/gitdir: //')
+            local main_git_dir
+            main_git_dir=$(dirname "$(dirname "$git_dir")")
+
+            log_info "Removing worktree $wt_name..."
+            if git --git-dir="$main_git_dir" worktree remove "$wt_path" --force 2>/dev/null; then
+                log_success "Removed $wt_name"
+                ((removed++))
+            else
+                log_error "Failed to remove $wt_name"
+            fi
+        else
+            log_error "Cannot find git info for $wt_name"
+        fi
+    done <<< "$selected"
+
+    echo ""
+    log_success "Removed $removed worktrees"
 }
 
 install_retriever() {
@@ -529,6 +942,7 @@ install_retriever() {
 
 # Parse arguments
 COMMAND=""
+WORKTREE_SUBCMD=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         -d|--dir)
@@ -538,6 +952,12 @@ while [[ $# -gt 0 ]]; do
         clone|fetch|list|install|help)
             COMMAND="$1"
             shift
+            ;;
+        worktree)
+            COMMAND="worktree"
+            shift
+            WORKTREE_SUBCMD="${1:-list}"
+            [ $# -gt 0 ] && shift
             ;;
         *)
             log_error "Unknown option: $1"
@@ -563,6 +983,9 @@ case $COMMAND in
         ;;
     list)
         list_repos
+        ;;
+    worktree)
+        worktree_command "$WORKTREE_SUBCMD"
         ;;
     install)
         install_retriever

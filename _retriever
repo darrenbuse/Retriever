@@ -5,13 +5,21 @@
 _retriever() {
     local -a commands
     local -a options
+    local -a worktree_subcommands
 
     commands=(
         'clone:Select and clone repos from GitHub'
         'fetch:Fetch and rebase selected repos'
         'list:List all repos in the repos directory'
+        'worktree:Manage git worktrees'
         'install:Add retriever to your PATH'
         'help:Show help message'
+    )
+
+    worktree_subcommands=(
+        'list:List all worktrees'
+        'add:Create a new worktree'
+        'remove:Remove worktrees'
     )
 
     options=(
@@ -32,6 +40,9 @@ _retriever() {
             case $words[1] in
                 clone|fetch|list)
                     _arguments $options
+                    ;;
+                worktree)
+                    _describe -t worktree_subcommands 'worktree subcommands' worktree_subcommands
                     ;;
             esac
             ;;

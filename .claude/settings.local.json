@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bats:*)",
+      "Skill(commit-commands:commit)"
+    ]
+  }
+}

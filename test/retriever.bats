@@ -257,3 +257,83 @@ EOF
     [ "$status" -eq 1 ]
     [[ "$output" == *"No git repos found"* ]]
 }
+
+# =============================================================================
+# Worktree Detection Tests
+# =============================================================================
+
+@test "list recognizes worktrees as git repos" {
+    create_fake_repo "main-repo"
+    create_fake_worktree "main-repo" "main-repo-feature" "feature-branch"
+
+    run "$RETRIEVER" list
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"main-repo"* ]]
+    [[ "$output" == *"main-repo-feature"* ]]
+    [[ "$output" == *"[feature-branch]"* ]]
+    [[ "$output" == *"(worktree)"* ]]
+}
+
+@test "list shows worktree count in total" {
+    create_fake_repo "main-repo"
+    create_fake_worktree "main-repo" "main-repo-feature"
+
+    run "$RETRIEVER" list
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"2 repos (1 worktrees)"* ]]
+}
+
+@test "list does not mark main repos as worktrees" {
+    create_fake_repo "main-repo"
+
+    run "$RETRIEVER" list
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"main-repo"* ]]
+    [[ "$output" != *"(worktree)"* ]]
+}
+
+# =============================================================================
+# Worktree Subcommand Tests
+# =============================================================================
+
+@test "worktree command shows usage" {
+    run "$RETRIEVER" help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"worktree"* ]]
+    [[ "$output" == *"list"* ]]
+    [[ "$output" == *"add"* ]]
+    [[ "$output" == *"remove"* ]]
+}
+
+@test "worktree list shows no worktrees when none exist" {
+    create_fake_repo "main-repo"
+
+    run "$RETRIEVER" worktree list
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"No worktrees found"* ]]
+}
+
+@test "worktree list shows existing worktrees" {
+    create_fake_repo "main-repo"
+    create_fake_worktree "main-repo" "main-repo-feature" "feature-xyz"
+
+    run "$RETRIEVER" worktree list
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"main-repo"* ]]
+    [[ "$output" == *"main-repo-feature"* ]]
+    [[ "$output" == *"[feature-xyz]"* ]]
+}
+
+@test "worktree unknown subcommand shows error" {
+    run "$RETRIEVER" worktree foobar
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Unknown worktree subcommand"* ]]
+}
+
+@test "worktree defaults to list" {
+    create_fake_repo "main-repo"
+
+    run "$RETRIEVER" worktree
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Worktrees in"* ]]
+}

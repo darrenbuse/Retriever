@@ -87,3 +87,16 @@ create_dirty_repo() {
     create_fake_repo "$name"
     echo "dirty" >> "$TEST_REPOS_DIR/$name/README.md"
 }
+
+# Create a worktree from an existing repo
+create_fake_worktree() {
+    local main_repo="$1"
+    local wt_name="$2"
+    local branch="${3:-feature-test}"
+    local main_dir="$TEST_REPOS_DIR/$main_repo"
+    local wt_dir="$TEST_REPOS_DIR/$wt_name"
+
+    cd "$main_dir"
+    git worktree add "$wt_dir" -b "$branch" --quiet
+    cd - > /dev/null
+}
