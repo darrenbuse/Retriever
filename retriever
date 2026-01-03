@@ -156,8 +156,12 @@ clone_repos() {
         local repo_name
         repo_name=$(basename "$(echo "$line" | cut -f1)")
         local is_existing=false
+        local repo_name_lower
+        repo_name_lower=$(echo "$repo_name" | tr '[:upper:]' '[:lower:]')
         for existing in "${existing_repos[@]+"${existing_repos[@]}"}"; do
-            if [ "$existing" = "$repo_name" ]; then
+            local existing_lower
+            existing_lower=$(echo "$existing" | tr '[:upper:]' '[:lower:]')
+            if [ "$existing_lower" = "$repo_name_lower" ]; then
                 is_existing=true
                 break
             fi
